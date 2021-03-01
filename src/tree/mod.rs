@@ -118,11 +118,27 @@ mod tests {
             "a=4/b=2/".to_string() + F2,
             "a=1/b=7/".to_string() + F3,
             "a=4/b=1/".to_string() + F4 ];
+        let level_a_1_b = single_file_partition(
+            "b", vec![ ("1", FE1), ("7", FE3)]);
         assert_eq!(13, 14, "lala");
         // val part_b_a1 = Partition { };
         // let expected = DeltaTree {
         //     root: vec![]
         // };
+    }
+
+    fn single_file_entries(file: ParquetDeltaFile) -> TreeNode {
+        TreeNode::FileEntries { files: vec![file] }
+    }
+
+    fn single_file_partition(name: &str, entries: Vec<(&str, ParquetDeltaFile)>) -> TreeNode {
+        let mut values = HashMap::new();
+        entries.into_iter().for_each(|(k, v)| {
+            values.insert(k.to_string(), single_file_entries(v));
+        });
+
+        // values.insert(value.to_string(), single_file_entries(file));
+        TreeNode::Partition { name: name.to_string(), values }
     }
 
     #[test]
