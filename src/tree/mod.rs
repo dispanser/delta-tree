@@ -3,6 +3,7 @@ use uuid::Uuid;
 use regex::Regex;
 use lazy_static::lazy_static;
 use std::collections::HashMap;
+use itertools::Itertools;
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct DeltaTree {
@@ -25,14 +26,20 @@ enum TreeNode {
 
 /// a single parquet file, represented in a compact partion / uuid / compression triple.
 /// TODO: figure out if other name components are variable, e.g. `c000`.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 struct ParquetDeltaFile {
     partition:        u32,
     uuid:             u128,
     compression: CompressionType,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct PartitionPath<'a> {
+    key:   &'a str,
+    value: &'a str,
+}
+
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 pub enum CompressionType {
     SNAPPY,
     GZIP,
@@ -64,11 +71,74 @@ impl DeltaTree {
     }
 
     pub fn from_paths(input_files: &Vec<String>) -> DeltaTree {
-        let files: Vec<ParquetDeltaFile> = input_files.iter()
-            .map(|f| DeltaTree::parse_file(f))
+        if input_files.is_empty() {
+            DeltaTree {
+                root: TreeNode::FileEntries { files: vec![] }
+            }
+        } else {
+            let components: Vec<(Vec<PartitionPath>, ParquetDeltaFile)> = input_files.iter()
+                .map(|f| f.split('/').collect())
+                .map(|path| DeltaTree::parse_path(path))
+                .sorted()
+                .collect();
+            let partition = DeltaTree::build_partition(components.as_slice());
+            DeltaTree {
+                root: partition
+            }
+        }
+    }
+
+    fn parse_path(mut path: Vec<&str>) -> (Vec<PartitionPath>, ParquetDeltaFile) {
+        let parquet = DeltaTree::parse_file(path.pop().unwrap());
+        let remaining_path = path.into_iter()
+            .map(|part| DeltaTree::key_value(part).unwrap())
             .collect();
-        DeltaTree {
-            root: TreeNode::FileEntries { files }
+        (remaining_path, parquet)
+    }
+
+    fn key_value(path: &str) -> Option<PartitionPath> {
+        if let Some(idx) = path.find('=') {
+            Some( PartitionPath { key: &path[0 .. idx], value: &path[idx + 1..] } )
+        } else {
+            None
+        }
+    }
+
+    fn build_partition(paths: &[(Vec<PartitionPath>, ParquetDeltaFile)]) -> TreeNode {
+        match paths {
+            [ first_entry, .. ] => {
+                match first_entry.0.as_slice() {
+                    [] => { // leaf: no further directory entries
+                        let files: Vec<ParquetDeltaFile> = paths.iter()
+                            .map(|pf| pf.1 )
+                            .collect();
+                        TreeNode::FileEntries { files }
+                    }
+                    first_path=> {
+                        let components      = first_path.len();
+                        let p1= &first_path[0];
+                        let name = p1.key;
+                        let mut current_value = p1.value;
+                        paths.partition_point()
+                        for path in paths {
+                            assert_eq!(path.0.len(), components);
+                            let &PartitionPath { key, value  } = path.0.get(0).unwrap();
+                            assert_eq!(key, name);
+                            if value == current_value {
+                                // println!("{:?} == {:?} at level {:?}",
+                                //
+                                // )
+                                println!("staying at key: {:?} value: {:?}", key, value);
+                            } else {
+                                println!("switching partition value @{:?} {:?} -> {:?}",
+                                        key, current_value, value);                          }
+                            current_value = value;
+                        }
+                        TreeNode::FileEntries { files: vec![] }
+                    }
+                }
+            }
+            [] => TreeNode::FileEntries { files: vec![] }
         }
     }
 
@@ -90,7 +160,6 @@ mod tests {
     use pretty_assertions::{assert_eq};
     use super::*; // we're in a submodule (test), bring parent into scope.
     use super::CompressionType::*;
-    use super::TreeNode::*;
 
     const F1: &str = "part-00007-00000000-0000-0000-0000-000000000000.c000.snappy.parquet";
     const F2: &str = "part-00007-00000000-0000-0000-0000-000000000001.c000.snappy.parquet";
@@ -180,5 +249,17 @@ mod tests {
         assert_eq!(&caps["part"], "00009");
         assert_eq!(&caps["uuid"], "477077ae-1429-4633-b07a-0c0cb75caf55");
         assert_eq!(&caps["compression"], "snappy");
+    }
+
+    #[test]
+    fn test_key_value() {
+        assert_eq!(DeltaTree::key_value("a=13"), Some(PartitionPath { key: "a", value: "13"}));
+        assert_eq!(DeltaTree::key_value("askaban"), None);
+        assert_eq!(DeltaTree::key_value("some-key=some-value-with-=-sign-in-the-middle"),
+                   Some(
+                       PartitionPath {
+                           key: "some-key",
+                           value: "some-value-with-=-sign-in-the-middle"
+                       }))
     }
 }
