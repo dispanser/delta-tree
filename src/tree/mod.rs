@@ -7,11 +7,11 @@ use itertools::Itertools;
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct DeltaTree {
-    root: TreeNode,
+    pub root: TreeNode,
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum TreeNode {
+pub enum TreeNode {
     /// a partition is a key and a map of all its values to the next lower level in the tree.
     Partition {
         name:     String,                   // the key / column name of the partition
@@ -27,7 +27,7 @@ enum TreeNode {
 /// a single parquet file, represented in a compact partion / uuid / compression triple.
 /// TODO: figure out if other name components are variable, e.g. `c000`.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
-struct ParquetDeltaFile {
+pub struct ParquetDeltaFile {
     partition:        u32,
     uuid:             u128,
     compression: CompressionType,
@@ -118,8 +118,6 @@ impl DeltaTree {
                         let &PartitionPath { key, value  } = path.0.get(level).unwrap();
                         assert_eq!(key, name);
                         if value != current_value {
-                            println!("recurse: {:?} = {:?} [{:?} .. {:?}] ({:?})",
-                                     key, current_value, current_index, idx, paths[current_index .. idx].len());
                             let child = DeltaTree::build_partition(
                                 &paths[current_index .. idx], level+1);
                             children.insert(current_value.to_string(), child);
