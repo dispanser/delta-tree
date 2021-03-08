@@ -81,7 +81,7 @@ impl DeltaTree {
                 .map(|path| DeltaTree::parse_path(path))
                 .sorted()
                 .collect();
-            let partition = DeltaTree::build_partition(components.as_slice());
+            let partition = DeltaTree::build_partition(components.as_slice(), 0);
             DeltaTree {
                 root: partition
             }
@@ -104,38 +104,38 @@ impl DeltaTree {
         }
     }
 
-    fn build_partition(paths: &[(Vec<PartitionPath>, ParquetDeltaFile)]) -> TreeNode {
+    fn build_partition(paths: &[(Vec<PartitionPath>, ParquetDeltaFile)], level: usize) -> TreeNode {
         match paths {
             [ first_entry, .. ] => {
-                match first_entry.0.as_slice() {
-                    [] => { // leaf: no further directory entries
-                        let files: Vec<ParquetDeltaFile> = paths.iter()
-                            .map(|pf| pf.1 )
-                            .collect();
-                        TreeNode::FileEntries { files }
-                    }
-                    first_path=> {
-                        let components      = first_path.len();
-                        let p1= &first_path[0];
-                        let name = p1.key;
-                        let mut current_value = p1.value;
-                        paths.partition_point()
-                        for path in paths {
-                            assert_eq!(path.0.len(), components);
-                            let &PartitionPath { key, value  } = path.0.get(0).unwrap();
-                            assert_eq!(key, name);
-                            if value == current_value {
-                                // println!("{:?} == {:?} at level {:?}",
-                                //
-                                // )
-                                println!("staying at key: {:?} value: {:?}", key, value);
-                            } else {
-                                println!("switching partition value @{:?} {:?} -> {:?}",
-                                        key, current_value, value);                          }
+                if let Some(p1) = first_entry.0.get(level) {
+                    let name = p1.key;
+                    let mut current_value = p1.value;
+                    let mut current_index = 0;
+                    let mut children: HashMap<String, TreeNode> = HashMap::new();
+                    // paths.partition_point()
+                    for (idx, path) in paths.iter().enumerate() {
+                        assert_eq!(path.0.len(), first_entry.0.len());
+                        let &PartitionPath { key, value  } = path.0.get(level).unwrap();
+                        assert_eq!(key, name);
+                        if value != current_value {
+                            println!("recurse: {:?} = {:?} [{:?} .. {:?}] ({:?})",
+                                     key, current_value, current_index, idx, paths[current_index .. idx].len());
+                            let child = DeltaTree::build_partition(
+                                &paths[current_index .. idx], level+1);
+                            children.insert(current_value.to_string(), child);
                             current_value = value;
+                            current_index = idx;
                         }
-                        TreeNode::FileEntries { files: vec![] }
                     }
+                    let last_child = DeltaTree::build_partition(
+                        &paths[current_index .. ], level+1);
+                    children.insert(current_value.to_string(), last_child);
+                    TreeNode::Partition { name: name.to_string(), values: children }
+                } else {
+                    let files: Vec<ParquetDeltaFile> = paths.iter()
+                        .map(|pf| pf.1 )
+                        .collect();
+                    TreeNode::FileEntries { files }
                 }
             }
             [] => TreeNode::FileEntries { files: vec![] }
