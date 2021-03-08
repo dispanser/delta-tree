@@ -1,9 +1,13 @@
 extern crate deltalake;
 extern crate anyhow;
 
-use uuid::Uuid;
+use std::time::{Duration, Instant};
 use std::env;
+use std::collections::hash_map::Entry;
 use deltatree::tree;
+use deltatree::tree::DeltaTree;
+use deltatree::tree::TreeNode;
+use itertools::Itertools;
 
 #[tokio::main(flavor="current_thread")]
 async fn main() -> anyhow::Result<()> {
@@ -11,10 +15,15 @@ async fn main() -> anyhow::Result<()> {
 
     if let Some(table_path) = args.get(1) {
         println!("reading delta table: {:?}", table_path);
+        let start_load = Instant::now();
         let delta_table = deltalake::open_table(table_path).await?;
-        build_tree(&delta_table);
-        let uuid = Uuid::parse_str("477077ae-1429-4633-b07a-0c0cb75caf55").unwrap();
-        println!("{:#x}", uuid.as_u128());
+        let start_tree = Instant::now();
+        let delta_tree = DeltaTree::new(&delta_table);
+        let file_memory = estimate_file_memory(&delta_table);
+        let tree_memory = estimate_tree_memory(&delta_tree.root);
+        println!("delta file memory: {} (time: {:?})", file_memory, start_load.elapsed());
+        println!("delta tree memory: {} (time: {:?})", tree_memory, start_tree.elapsed());
+        println!("relative tree size: {} %", 100 * tree_memory / file_memory);
         Ok(())
     } else {
         println!("no file argument given.");
@@ -22,10 +31,23 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-fn build_tree(delta_table: &deltalake::DeltaTable) -> tree::DeltaTree {
-    tree::DeltaTree::new(delta_table)
+fn build_tree(delta_table: &deltalake::DeltaTable) -> DeltaTree {
+    DeltaTree::new(delta_table)
 }
 
-fn estimate_tree_memory(_tree: tree::DeltaTree) -> usize {
-    0
+fn estimate_tree_memory(tree: &TreeNode) -> usize {
+    match tree {
+        TreeNode::FileEntries { files } =>
+            std::mem::size_of::<tree::ParquetDeltaFile>() * files.capacity(),
+        TreeNode::Partition { name, values } =>
+            values.iter()
+                .fold(std::mem::size_of::<Entry<String, TreeNode>>() + name.capacity(),
+                      |agg, (key, value)|
+                          agg + key.capacity() + estimate_tree_memory(value))
+    }
+}
+
+fn estimate_file_memory(delta_table: &deltalake::DeltaTable) -> usize {
+    delta_table.get_files().iter().map(|f| f.capacity())
+        .fold(0, |a, b| a + b)
 }
