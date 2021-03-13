@@ -27,7 +27,7 @@ pub enum TreeNode {
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 pub struct ParquetDeltaFile {
     partition: u32,
-    uuid: u128,
+    uuid: Uuid,
     cluster: u8,
     compression: CompressionType,
 }
@@ -80,7 +80,7 @@ impl ParquetDeltaFile {
             let partition = caps["part"]
                 .parse::<u32>()
                 .unwrap_or_else(|_err| <u32>::max_value());
-            let uuid = Uuid::parse_str(&caps["uuid"]).unwrap().as_u128();
+            let uuid = Uuid::parse_str(&caps["uuid"]).unwrap();
             let cluster = caps["c"].parse().unwrap();
             let compression = CompressionType::from_str(&caps["compression"]);
 
@@ -95,11 +95,10 @@ impl ParquetDeltaFile {
         }
     }
     fn name(&self) -> String {
-        let uuid = Uuid::from_u128(self.uuid);
         format!(
             "part-{:05}-{}.c{:03}.{}.parquet",
             self.partition,
-            uuid,
+            self.uuid,
             self.cluster,
             self.compression.to_string()
         )
@@ -219,25 +218,25 @@ mod tests {
 
     const FE1: ParquetDeltaFile = ParquetDeltaFile {
         partition: 7,
-        uuid: 0,
+        uuid: Uuid::from_u128(0),
         cluster: 0,
         compression: SNAPPY,
     };
     const FE2: ParquetDeltaFile = ParquetDeltaFile {
         partition: 7,
-        uuid: 1,
+        uuid: Uuid::from_u128(1),
         cluster: 1,
         compression: SNAPPY,
     };
     const FE3: ParquetDeltaFile = ParquetDeltaFile {
         partition: 7,
-        uuid: 2,
+        uuid: Uuid::from_u128(2),
         cluster: 2,
         compression: SNAPPY,
     };
     const FE4: ParquetDeltaFile = ParquetDeltaFile {
         partition: 7,
-        uuid: 3,
+        uuid: Uuid::from_u128(3),
         cluster: 3,
         compression: SNAPPY,
     };
@@ -368,7 +367,7 @@ mod tests {
             entry,
             ParquetDeltaFile {
                 partition: 9,
-                uuid: 94959152347567637375526247419927637845,
+                uuid: Uuid::from_string("477077ae-1429-4633-b07a-0c0cb75caf55").unwrap(),
                 cluster: 177,
                 compression: SNAPPY
             }
