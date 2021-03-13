@@ -28,6 +28,7 @@ pub enum TreeNode {
 pub struct ParquetDeltaFile {
     partition: u32,
     uuid: u128,
+    cluster: u8,
     compression: CompressionType,
 }
 
@@ -53,16 +54,56 @@ impl CompressionType {
             _ => panic!("unexpected compression name, {}", s),
         }
     }
+
+    fn to_string(&self) -> &str {
+        match self {
+            CompressionType::GZIP => "gzip",
+            CompressionType::SNAPPY => "snappy",
+            CompressionType::NONE => "none",
+        }
+    }
 }
 
 lazy_static! {
     static ref FILENAME_REGEX: Regex = Regex::new(
         "^part-(?P<part>\\d{5})-\
                 (?P<uuid>[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-\
-                [0-9a-fA-F]{4}-[0-9a-fA-F]{12})\\.c000\\.\
+                [0-9a-fA-F]{4}-[0-9a-fA-F]{12})\\.c(?P<c>\\d{3})\\.\
                 (?P<compression>(snappy|gzip|none)).parquet"
     )
     .unwrap();
+}
+
+impl ParquetDeltaFile {
+    fn from_string(name: &str) -> ParquetDeltaFile {
+        if let Some(caps) = FILENAME_REGEX.captures(name) {
+            let partition = caps["part"]
+                .parse::<u32>()
+                .unwrap_or_else(|_err| <u32>::max_value());
+            let uuid = Uuid::parse_str(&caps["uuid"]).unwrap().as_u128();
+            let cluster = caps["c"].parse().unwrap();
+            let compression = CompressionType::from_str(&caps["compression"]);
+
+            ParquetDeltaFile {
+                partition,
+                uuid,
+                cluster,
+                compression,
+            }
+        } else {
+            panic!("unable to parse '{}'", name)
+        }
+    }
+    fn name(&self) -> String {
+        let uuid = Uuid::from_u128(self.uuid);
+        format!(
+            "part-{:05}-{}.c{:03}.{}.parquet",
+            self.partition,
+            uuid,
+            self.cluster,
+            self.compression.to_string()
+        )
+    }
 }
 
 impl DeltaTree {
@@ -87,8 +128,28 @@ impl DeltaTree {
         }
     }
 
+    pub fn files(&self) -> Vec<String> {
+        fn files_in_subtree<'a>(prefix: &'a str, node: &TreeNode) -> Vec<String> {
+            match node {
+                TreeNode::FileEntries { files } => files
+                    .iter()
+                    .map(|f| format!("{}{}", prefix, f.name()))
+                    .collect(),
+                TreeNode::Partition { name, values } => values
+                    .iter()
+                    .flat_map(|(value, node)| {
+                        let sub_prefix = format!("{}{}={}/", prefix, name, value);
+                        files_in_subtree(&sub_prefix, node)
+                    })
+                    .collect(), // vec![],
+            }
+        }
+
+        files_in_subtree("", &self.root)
+    }
+
     fn parse_path(mut path: Vec<&str>) -> (Vec<PartitionPath>, ParquetDeltaFile) {
-        let parquet = DeltaTree::parse_file(path.pop().unwrap());
+        let parquet = ParquetDeltaFile::from_string(path.pop().unwrap());
         let remaining_path = path
             .into_iter()
             .map(|part| DeltaTree::key_value(part).unwrap())
@@ -142,21 +203,6 @@ impl DeltaTree {
             [] => TreeNode::FileEntries { files: vec![] },
         }
     }
-
-    fn parse_file(name: &str) -> ParquetDeltaFile {
-        let caps = FILENAME_REGEX.captures(name).unwrap();
-        let partition = caps["part"]
-            .parse::<u32>()
-            .unwrap_or_else(|_err| <u32>::max_value());
-        let uuid = Uuid::parse_str(&caps["uuid"]).unwrap().as_u128();
-        let compression = CompressionType::from_str(&caps["compression"]);
-
-        ParquetDeltaFile {
-            partition,
-            uuid,
-            compression,
-        }
-    }
 }
 
 #[cfg(test)]
@@ -167,28 +213,32 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     const F1: &str = "part-00007-00000000-0000-0000-0000-000000000000.c000.snappy.parquet";
-    const F2: &str = "part-00007-00000000-0000-0000-0000-000000000001.c000.snappy.parquet";
-    const F3: &str = "part-00007-00000000-0000-0000-0000-000000000002.c000.snappy.parquet";
-    const F4: &str = "part-00007-00000000-0000-0000-0000-000000000003.c000.snappy.parquet";
+    const F2: &str = "part-00007-00000000-0000-0000-0000-000000000001.c001.snappy.parquet";
+    const F3: &str = "part-00007-00000000-0000-0000-0000-000000000002.c002.snappy.parquet";
+    const F4: &str = "part-00007-00000000-0000-0000-0000-000000000003.c003.snappy.parquet";
 
     const FE1: ParquetDeltaFile = ParquetDeltaFile {
         partition: 7,
         uuid: 0,
+        cluster: 0,
         compression: SNAPPY,
     };
     const FE2: ParquetDeltaFile = ParquetDeltaFile {
         partition: 7,
         uuid: 1,
+        cluster: 1,
         compression: SNAPPY,
     };
     const FE3: ParquetDeltaFile = ParquetDeltaFile {
         partition: 7,
         uuid: 2,
+        cluster: 2,
         compression: SNAPPY,
     };
     const FE4: ParquetDeltaFile = ParquetDeltaFile {
         partition: 7,
         uuid: 3,
+        cluster: 3,
         compression: SNAPPY,
     };
 
@@ -209,22 +259,62 @@ mod tests {
         assert_eq!(expected, tree);
     }
 
+    fn tree_round_trip(mut files: Vec<String>) -> () {
+        let tree = DeltaTree::from_paths(&files);
+        let mut files_from_tree = tree.files();
+
+        files.sort();
+        files_from_tree.sort();
+        assert_eq!(files, files_from_tree);
+    }
+
     #[test]
-    fn nested_partitions() {
-        let paths = vec![
+    fn tree_parse_nested_partitions() {
+        let nested_paths: Vec<String> = vec![
             "a=1/b=1/".to_string() + F1,
             "a=4/b=2/".to_string() + F2,
             "a=1/b=7/".to_string() + F3,
             "a=4/b=1/".to_string() + F4,
         ];
+
         let level_a_1_b = create_leaf_partition("b", vec![("1", FE1), ("7", FE3)]);
         let level_a_4_b = create_leaf_partition("b", vec![("1", FE4), ("2", FE2)]);
         let root = create_partition("a", vec![("1", level_a_1_b), ("4", level_a_4_b)]);
         let expected = DeltaTree { root };
 
-        let actual = DeltaTree::from_paths(&paths);
+        let actual = DeltaTree::from_paths(&nested_paths);
 
         assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn file_name_round_trip() {
+        assert_eq!(ParquetDeltaFile::from_string(F1).name(), F1);
+        assert_eq!(ParquetDeltaFile::from_string(F2).name(), F2);
+        assert_eq!(ParquetDeltaFile::from_string(F3).name(), F3);
+        assert_eq!(ParquetDeltaFile::from_string(F4).name(), F4);
+    }
+
+    #[test]
+    fn flat_table_round_trip() {
+        let paths = vec![
+            F1.to_string(),
+            F2.to_string(),
+            F3.to_string(),
+            F4.to_string(),
+        ];
+        tree_round_trip(paths);
+    }
+
+    #[test]
+    fn nested_partitions_round_trip() {
+        let mut nested_paths: Vec<String> = vec![
+            "a=1/b=1/".to_string() + F1,
+            "a=4/b=2/".to_string() + F2,
+            "a=1/b=7/".to_string() + F3,
+            "a=4/b=1/".to_string() + F4,
+        ];
+        tree_round_trip(nested_paths);
     }
 
     fn single_file_entries(file: ParquetDeltaFile) -> TreeNode {
@@ -272,13 +362,14 @@ mod tests {
 
     #[test]
     fn test_file_name_parse() {
-        let name = "part-00009-477077ae-1429-4633-b07a-0c0cb75caf55.c000.snappy.parquet";
-        let entry = DeltaTree::parse_file(&name);
+        let name = "part-00009-477077ae-1429-4633-b07a-0c0cb75caf55.c177.snappy.parquet";
+        let entry = ParquetDeltaFile::from_string(&name);
         assert_eq!(
             entry,
             ParquetDeltaFile {
                 partition: 9,
                 uuid: 94959152347567637375526247419927637845,
+                cluster: 177,
                 compression: SNAPPY
             }
         );
@@ -286,18 +377,11 @@ mod tests {
 
     #[test]
     fn test_regex_filename() {
-        let name = "part-00009-477077ae-1429-4633-b07a-0c0cb75caf55.c000.snappy.parquet";
-
-        let regex = Regex::new(
-            "part-(?P<part>\\d{5})-\
-                (?P<uuid>[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-\
-                [0-9a-fA-F]{4}-[0-9a-fA-F]{12})\\.c000\\.\
-                (?P<compression>(snappy|gzip|none)).parquet",
-        )
-        .unwrap();
-        let caps = regex.captures(name).unwrap();
+        let name = "part-00009-477077ae-1429-4633-b07a-0c0cb75caf55.c003.snappy.parquet";
+        let caps = FILENAME_REGEX.captures(name).unwrap();
         assert_eq!(&caps["part"], "00009");
         assert_eq!(&caps["uuid"], "477077ae-1429-4633-b07a-0c0cb75caf55");
+        assert_eq!(&caps["c"], "003");
         assert_eq!(&caps["compression"], "snappy");
     }
 
