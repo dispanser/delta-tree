@@ -367,7 +367,7 @@ mod tests {
             entry,
             ParquetDeltaFile {
                 partition: 9,
-                uuid: Uuid::from_string("477077ae-1429-4633-b07a-0c0cb75caf55").unwrap(),
+                uuid: Uuid::parse_str("477077ae-1429-4633-b07a-0c0cb75caf55").unwrap(),
                 cluster: 177,
                 compression: SNAPPY
             }
