@@ -5,6 +5,7 @@ use std::env;
 use std::fs::File;
 use std::path::Path;
 use parquet::file::reader::{FileReader, SerializedFileReader};
+use parquet::file::metadata::RowGroupMetaData;
 use parquet::record::{RowAccessor, Row};
 use parquet::record::reader::RowIter;
 
@@ -20,28 +21,23 @@ const DESIRED_INDEX: i64 = 5000000;
 
 fn read_file(path: &str) -> usize {
     let file = File::open(&Path::new(path)).unwrap();
-    let reader = SerializedFileReader::new(file).unwrap();
+    let mut reader = SerializedFileReader::new(file).unwrap();
     let mut rows = 0;
-    for group_index in 0..reader.num_row_groups() {
-        let row_group = reader.get_row_group(group_index).unwrap();
-        let metadata = row_group.metadata();
-        rows += metadata.num_rows();
-        if let Some(stats) = metadata.column(0).statistics() {
-            let min = read_le_i64(stats.min_bytes());
-            let max = read_le_i64(stats.max_bytes());
-            if DESIRED_INDEX >= min && DESIRED_INDEX <= max {
-                println!("scanning: min: '{:#?}', max: '{:#?}'", min, max);
-                scan_rows(row_group.get_row_iter(None).unwrap());
-            } else {
-                println!("skipping: min: '{:#?}', max: '{:#?}'", min, max);
-            }
-        } else {
-            scan_rows(row_group.get_row_iter(None).unwrap());
-        }
-        // println!("meta data: {:#?}", metadata);
-    }
-    // scan_rows(reader.get_row_iter(None).unwrap());
+    // let row_group = reader.get_row_group(0).unwrap();
+
+    reader.filter_row_groups(&|metadata, _id| filter_row_group_for_idx(metadata));
+    scan_rows(reader.get_row_iter(None).unwrap());
     rows as usize
+}
+
+fn filter_row_group_for_idx(metadata: &RowGroupMetaData) -> bool {
+    if let Some(stats) = metadata.column(0).statistics() {
+        let min = read_le_i64(stats.min_bytes());
+        let max = read_le_i64(stats.max_bytes());
+        DESIRED_INDEX >= min && DESIRED_INDEX <= max
+    } else {
+        true
+    }
 }
 
 fn scan_rows(mut iter: RowIter) -> Option<Row> {
