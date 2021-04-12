@@ -43,7 +43,7 @@ fn filter_row_group_for_idx(metadata: &RowGroupMetaData) -> bool {
 fn scan_rows(mut iter: RowIter) -> Option<Row> {
     while let Some(record) = iter.next() {
         let idx = record.get_long(0).unwrap();
-        if idx == 5000000 {
+        if idx == DESIRED_INDEX {
             println!("{}", record);
             return Some(record);
         }
